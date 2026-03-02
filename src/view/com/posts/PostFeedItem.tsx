@@ -1,4 +1,4 @@
-import {memo, useCallback, useMemo, useState} from 'react'
+import {memo, useCallback, useEffect, useMemo, useState} from 'react'
 import {StyleSheet, View} from 'react-native'
 import {
   type AppBskyActorDefs,
@@ -9,7 +9,7 @@ import {
   type ModerationDecision,
   RichText as RichTextAPI,
 } from '@atproto/api'
-import {useQueryClient} from '@tanstack/react-query'
+import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {type ReasonFeedSource} from '#/lib/api/feed/types'
 import {MAX_POST_LINES} from '#/lib/constants'
@@ -18,13 +18,20 @@ import {usePalette} from '#/lib/hooks/usePalette'
 import {makeProfileLink} from '#/lib/routes/links'
 import {countLines} from '#/lib/strings/helpers'
 import {
+  getPromotionServiceEndpointForFeed,
+  parsePromotionFromFeedContext,
+  parsePromotionViewsResponse,
+  parseTaskIdFromFeedContext,
+} from '#/lib/var/promotion'
+import {autoSpendPromotionReceipt} from '#/lib/var/promotion-service'
+import {
   POST_TOMBSTONE,
   type Shadow,
   usePostShadow,
 } from '#/state/cache/post-shadow'
 import {useFeedFeedbackContext} from '#/state/feed-feedback'
 import {unstableCacheProfileView} from '#/state/queries/profile'
-import {useSession} from '#/state/session'
+import {useAgent, useSession} from '#/state/session'
 import {useMergedThreadgateHiddenReplies} from '#/state/threadgate-hidden-replies'
 import {
   buildPostSourceKey,
@@ -46,6 +53,7 @@ import {PostControls} from '#/components/PostControls'
 import {DiscoverDebug} from '#/components/PostControls/DiscoverDebug'
 import {RichText} from '#/components/RichText'
 import {SubtleHover} from '#/components/SubtleHover'
+import {Text} from '#/components/Typography'
 import {useAnalytics} from '#/analytics'
 import {useActorStatus} from '#/features/liveNow'
 import * as bsky from '#/types/bsky'
@@ -169,8 +177,87 @@ let FeedItemInner = ({
     const urip = new AtUri(post.uri)
     return [makeProfileLink(post.author, 'post', urip.rkey), urip.rkey]
   }, [post.uri, post.author])
+  const agent = useAgent()
   const {sendInteraction, feedSourceInfo, feedDescriptor} =
     useFeedFeedbackContext()
+  const isPromotion = useMemo(
+    () => parsePromotionFromFeedContext(feedContext),
+    [feedContext],
+  )
+  const promotionFeedUri = useMemo(() => {
+    if (!isPromotion || !feedDescriptor) return null
+    const [kind, value] = feedDescriptor.split('|')
+    return kind === 'feedgen' && value ? value : null
+  }, [feedDescriptor, isPromotion])
+  const promotionTaskId = useMemo(
+    () => parseTaskIdFromFeedContext(feedContext),
+    [feedContext],
+  )
+
+  useEffect(() => {
+    if (!feedContext) return
+    console.log('[VAR] feedContext', {
+      postUri: post.uri,
+      feedContext,
+      isPromotion,
+      promotionTaskId,
+      promotionFeedUri,
+    })
+  }, [post.uri, feedContext, isPromotion, promotionTaskId, promotionFeedUri])
+
+  const {data: promotionServiceEndpoint} = useQuery({
+    queryKey: ['promotion-service-endpoint', promotionFeedUri],
+    enabled: Boolean(promotionFeedUri),
+    staleTime: 1000 * 60 * 10,
+    queryFn: async () =>
+      getPromotionServiceEndpointForFeed({
+        agent,
+        feedUri: promotionFeedUri!,
+      }),
+  })
+  const {data: promotionViews} = useQuery({
+    queryKey: ['promotion-views', promotionServiceEndpoint, post.uri],
+    enabled: Boolean(isPromotion && promotionServiceEndpoint),
+    staleTime: 1000 * 30,
+    queryFn: async () => {
+      const url = new URL('/var/posts/views', promotionServiceEndpoint!)
+      url.searchParams.set('postUri', post.uri)
+      const res = await fetch(url.toString())
+      if (!res.ok) {
+        throw new Error(`promotion views request failed (${res.status})`)
+      }
+      const data = (await res.json()) as unknown
+      return parsePromotionViewsResponse(data)
+    },
+  })
+  useQuery({
+    queryKey: [
+      'promotion-auto-spend',
+      promotionServiceEndpoint,
+      promotionTaskId,
+      agent.session?.did,
+    ],
+    enabled: Boolean(
+      isPromotion &&
+        promotionServiceEndpoint &&
+        promotionTaskId &&
+        agent.session?.did,
+    ),
+    staleTime: 1000 * 60 * 10,
+    queryFn: async () => {
+      const did = agent.session?.did
+      const accessJwt = agent.session?.accessJwt
+      if (!did || !promotionServiceEndpoint || !promotionTaskId) return
+      const result = await autoSpendPromotionReceipt({
+        serviceUrl: promotionServiceEndpoint,
+        taskId: promotionTaskId,
+        spenderDid: did,
+        accessJwt,
+      })
+      void result
+    },
+    retry: false,
+  })
 
   const onPressReply = () => {
     sendInteraction({
@@ -366,6 +453,18 @@ let FeedItemInner = ({
             postHref={href}
             onOpenAuthor={onOpenAuthor}
           />
+          {isPromotion && (
+            <View style={styles.promotionRow}>
+              <Text style={[a.text_xs, a.font_bold, styles.promotionTag]}>
+                Promotion
+              </Text>
+              {typeof promotionViews === 'number' && (
+                <Text style={[a.text_xs, pal.textLight]}>
+                  {promotionViews.toLocaleString()} views
+                </Text>
+              )}
+            </View>
+          )}
           {showReplyTo &&
             (parentAuthor || isParentBlocked || isParentNotFound) && (
               <PostRepliedTo
@@ -521,6 +620,20 @@ const styles = StyleSheet.create({
     position: 'relative',
     flex: 1,
     zIndex: 0,
+  },
+  promotionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 2,
+    marginBottom: 2,
+  },
+  promotionTag: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: '#ffe9a8',
+    color: '#6e5200',
   },
   alert: {
     marginTop: 6,

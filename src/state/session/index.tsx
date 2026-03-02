@@ -30,6 +30,7 @@ import {addSessionDebugLog} from './logging'
 export type {SessionAccount} from '#/state/session/types'
 
 import {clearPersistedQueryStorage} from '#/lib/persisted-query-storage'
+import {ensureVarUserKeypair} from '#/lib/var/user-keypair'
 import {
   type SessionApiContext,
   type SessionStateContext,
@@ -169,6 +170,7 @@ export function Provider({children}: React.PropsWithChildren<{}>) {
         newAgent: agent,
         newAccount: account,
       })
+      void ensureVarUserKeypair(agent).catch(() => {})
       ax.metric(
         'account:loggedIn',
         {logContext, withPassword: true},
