@@ -210,7 +210,7 @@ export function PromotionScreen({navigation}: Props) {
         string,
         {
           hasAudit: boolean
-          count: number
+          verifiedViewCount: number
           lastValidatedAt?: string
         }
       >()
@@ -227,7 +227,7 @@ export function PromotionScreen({navigation}: Props) {
         })
         map.set(key, {
           hasAudit: Boolean(audit),
-          count: validation.count,
+          verifiedViewCount: validation.verifiedViewCount,
           lastValidatedAt: validation.lastValidatedAt,
         })
       }
@@ -253,7 +253,7 @@ export function PromotionScreen({navigation}: Props) {
         })
         console.log('promotion validate: done', {
           taskId: task.taskId,
-          validationCount: result.validationCount,
+          verifiedViewCount: result.verifiedViewCount,
           proofEpoch: result.proof.epoch,
           verifiedCount: result.verifyOut.count,
         })
@@ -443,7 +443,7 @@ export function PromotionScreen({navigation}: Props) {
                     const validationState = validationStateQuery.data?.get(
                       `${task.serviceUrl}::${task.taskId}`,
                     )
-                    if (!validationState?.count) return null
+                    if (!validationState?.verifiedViewCount) return null
                     return (
                       <View
                         style={[
@@ -465,7 +465,7 @@ export function PromotionScreen({navigation}: Props) {
                             a.font_bold,
                             {color: t.palette.positive_500},
                           ]}>
-                          View: {validationState.count}
+                          Views: {validationState.verifiedViewCount}
                         </Text>
                       </View>
                     )
@@ -503,7 +503,7 @@ export function PromotionScreen({navigation}: Props) {
                   const validationState =
                     validationStateQuery.data?.get(taskKey)
                   const hasAudit = validationState?.hasAudit ?? false
-                  const validationCount = validationState?.count ?? 0
+                  const hasValidated = Boolean(validationState?.lastValidatedAt)
                   const hasPostUri =
                     typeof task.postUri === 'string' && Boolean(task.postUri)
                   return (
@@ -560,7 +560,7 @@ export function PromotionScreen({navigation}: Props) {
                           </Text>
                         </View>
                       )}
-                      {validationCount > 0 ? (
+                      {hasValidated ? (
                         <Button
                           label={_(msg`View promotion proof`)}
                           size="small"

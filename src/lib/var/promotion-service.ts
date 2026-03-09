@@ -43,7 +43,7 @@ export type PromotionTaskAuditMaterial = {
 }
 
 export type PromotionTaskValidationState = {
-  count: number
+  verifiedViewCount: number
   lastValidatedAt?: string
 }
 
@@ -66,7 +66,7 @@ export type PromotionTaskValidationResult = {
     domainSize: number
     kT: number
   }
-  validationCount: number
+  verifiedViewCount: number
 }
 
 export type PromotionTaskProofJson = unknown
@@ -152,7 +152,7 @@ export function getPromotionTaskValidationState(_args: {
   ownerDid: string
   taskId: string
 }): PromotionTaskValidationState {
-  return {count: 0}
+  return {verifiedViewCount: 0}
 }
 
 export function validatePromotionTaskProof(_args: {

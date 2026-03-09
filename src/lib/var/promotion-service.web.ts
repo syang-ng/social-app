@@ -143,7 +143,7 @@ export type PromotionTaskAuditMaterial = {
 }
 
 export type PromotionTaskValidationState = {
-  count: number
+  verifiedViewCount: number
   lastValidatedAt?: string
 }
 
@@ -160,7 +160,7 @@ export type PromotionTaskValidationResult = {
     proofBinSha256?: string
   }
   verifyOut: VerifyChainOutput
-  validationCount: number
+  verifiedViewCount: number
 }
 
 export type PromotionTaskProofJson = unknown
@@ -970,16 +970,17 @@ export async function validatePromotionTaskProof({
     )
   }
 
-  const validationState = incrementPromotionTaskValidationState({
+  const validationState = savePromotionTaskValidationState({
     ownerDid,
     taskId,
+    verifiedViewCount: verifyOut.count,
   })
 
   return {
     commitments,
     proof,
     verifyOut,
-    validationCount: validationState.count,
+    verifiedViewCount: validationState.verifiedViewCount,
   }
 }
 
@@ -1267,13 +1268,14 @@ export function getPromotionTaskValidationState({
   const raw = localStorage.getItem(
     getTaskValidationStorageKey(ownerDid, taskId),
   )
-  if (!raw) return {count: 0}
+  if (!raw) return {verifiedViewCount: 0}
   try {
     const parsed = JSON.parse(raw) as Partial<PromotionTaskValidationState>
     return {
-      count:
-        typeof parsed.count === 'number' && Number.isFinite(parsed.count)
-          ? Math.max(0, Math.floor(parsed.count))
+      verifiedViewCount:
+        typeof parsed.verifiedViewCount === 'number' &&
+        Number.isFinite(parsed.verifiedViewCount)
+          ? Math.max(0, Math.floor(parsed.verifiedViewCount))
           : 0,
       lastValidatedAt:
         typeof parsed.lastValidatedAt === 'string'
@@ -1281,19 +1283,21 @@ export function getPromotionTaskValidationState({
           : undefined,
     }
   } catch {
-    return {count: 0}
+    return {verifiedViewCount: 0}
   }
 }
 
-function incrementPromotionTaskValidationState({
+function savePromotionTaskValidationState({
   ownerDid,
   taskId,
+  verifiedViewCount,
 }: {
   ownerDid: string
   taskId: string
+  verifiedViewCount: number
 }): PromotionTaskValidationState {
   const next = {
-    count: getPromotionTaskValidationState({ownerDid, taskId}).count + 1,
+    verifiedViewCount: Math.max(0, Math.floor(verifiedViewCount)),
     lastValidatedAt: new Date().toISOString(),
   }
   localStorage.setItem(
