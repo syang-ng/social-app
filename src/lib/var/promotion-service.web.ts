@@ -163,6 +163,8 @@ export type PromotionTaskValidationResult = {
   validationCount: number
 }
 
+export type PromotionTaskProofJson = unknown
+
 export type PromotionTaskSetupStage =
   | 'user-key-load-start'
   | 'user-key-load-done'
@@ -979,6 +981,26 @@ export async function validatePromotionTaskProof({
     verifyOut,
     validationCount: validationState.count,
   }
+}
+
+export async function getPromotionTaskProofJson({
+  serviceUrl,
+  taskId,
+}: {
+  serviceUrl: string
+  taskId: string
+}): Promise<PromotionTaskProofJson> {
+  const proofJsonUrl = new URL(
+    `/var/tasks/${encodeURIComponent(taskId)}/proof.json`,
+    serviceUrl,
+  ).toString()
+  const res = await fetch(proofJsonUrl, {
+    method: 'GET',
+  })
+  if (!res.ok) {
+    throw new Error(`get proof.json failed (${res.status})`)
+  }
+  return (await res.json()) as PromotionTaskProofJson
 }
 
 export async function getRegisteredUserCount({

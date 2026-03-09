@@ -1,5 +1,5 @@
 import {useCallback, useMemo, useState} from 'react'
-import {ActivityIndicator, View} from 'react-native'
+import {ActivityIndicator, Modal, ScrollView, View} from 'react-native'
 import {AtUri} from '@atproto/api'
 import {msg} from '@lingui/core/macro'
 import {useLingui} from '@lingui/react'
@@ -15,9 +15,11 @@ import {getPromotionServicesForFeed} from '#/lib/var/promotion'
 import {
   getPromotionPostViews,
   getPromotionTaskAuditMaterial,
+  getPromotionTaskProofJson,
   getPromotionTaskValidationState,
   listPromotionTasks,
   type PromotionTask,
+  type PromotionTaskProofJson,
   validatePromotionTaskProof,
 } from '#/lib/var/promotion-service'
 import {logger} from '#/logger'
@@ -49,6 +51,16 @@ export function PromotionScreen({navigation}: Props) {
   const [validatingTaskKey, setValidatingTaskKey] = useState<string | null>(
     null,
   )
+  const [proofViewer, setProofViewer] = useState<{
+    visible: boolean
+    loading: boolean
+    taskId?: string
+    data?: PromotionTaskProofJson
+    error?: string
+  }>({
+    visible: false,
+    loading: false,
+  })
 
   useFocusEffect(
     useCallback(() => {
@@ -277,6 +289,33 @@ export function PromotionScreen({navigation}: Props) {
     [navigation],
   )
 
+  const onViewProof = useCallback(async (task: PromotionTaskWithSource) => {
+    setProofViewer({
+      visible: true,
+      loading: true,
+      taskId: task.taskId,
+    })
+    try {
+      const proofJson = await getPromotionTaskProofJson({
+        serviceUrl: task.serviceUrl,
+        taskId: task.taskId,
+      })
+      setProofViewer({
+        visible: true,
+        loading: false,
+        taskId: task.taskId,
+        data: proofJson,
+      })
+    } catch (err) {
+      setProofViewer({
+        visible: true,
+        loading: false,
+        taskId: task.taskId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }, [])
+
   const settingsLink = (
     <Link
       to="/promotion/settings"
@@ -464,6 +503,7 @@ export function PromotionScreen({navigation}: Props) {
                   const validationState =
                     validationStateQuery.data?.get(taskKey)
                   const hasAudit = validationState?.hasAudit ?? false
+                  const validationCount = validationState?.count ?? 0
                   const hasPostUri =
                     typeof task.postUri === 'string' && Boolean(task.postUri)
                   return (
@@ -520,6 +560,21 @@ export function PromotionScreen({navigation}: Props) {
                           </Text>
                         </View>
                       )}
+                      {validationCount > 0 ? (
+                        <Button
+                          label={_(msg`View promotion proof`)}
+                          size="small"
+                          variant="outline"
+                          color="secondary"
+                          style={[a.flex_1]}
+                          onPress={() => {
+                            void onViewProof(task)
+                          }}>
+                          <ButtonText>
+                            <Trans>View proof</Trans>
+                          </ButtonText>
+                        </Button>
+                      ) : null}
                     </View>
                   )
                 })()}
@@ -528,6 +583,90 @@ export function PromotionScreen({navigation}: Props) {
           </View>
         )}
       </Layout.Content>
+      <Modal
+        transparent
+        visible={proofViewer.visible}
+        animationType="fade"
+        onRequestClose={() => {
+          setProofViewer({visible: false, loading: false})
+        }}>
+        <View
+          style={[
+            a.flex_1,
+            a.justify_center,
+            a.align_center,
+            {backgroundColor: 'rgba(0, 0, 0, 0.45)'},
+          ]}>
+          <View
+            style={[
+              a.w_full,
+              a.mx_lg,
+              a.rounded_lg,
+              a.border,
+              a.p_lg,
+              a.gap_md,
+              t.atoms.bg,
+              t.atoms.border_contrast_low,
+              {maxWidth: 760, maxHeight: '80%'},
+            ]}>
+            <View
+              style={[a.flex_row, a.align_center, a.justify_between, a.gap_sm]}>
+              <View style={[a.flex_1, a.gap_xs]}>
+                <Text style={[a.font_bold, a.text_lg]}>
+                  <Trans>Proof JSON</Trans>
+                </Text>
+                {proofViewer.taskId ? (
+                  <Text style={[a.text_sm, t.atoms.text_contrast_medium]}>
+                    #{proofViewer.taskId}
+                  </Text>
+                ) : null}
+              </View>
+              <Button
+                label={_(msg`Close proof viewer`)}
+                size="small"
+                variant="ghost"
+                color="secondary"
+                onPress={() => {
+                  setProofViewer({visible: false, loading: false})
+                }}>
+                <ButtonText>
+                  <Trans>Close</Trans>
+                </ButtonText>
+              </Button>
+            </View>
+            {proofViewer.loading ? (
+              <View style={[a.py_xl, a.align_center, a.gap_sm]}>
+                <ActivityIndicator />
+                <Text style={[t.atoms.text_contrast_medium]}>
+                  <Trans>Loading proof...</Trans>
+                </Text>
+              </View>
+            ) : proofViewer.error ? (
+              <View style={[a.gap_sm]}>
+                <Text style={[a.font_bold]}>
+                  <Trans>Could not load proof.</Trans>
+                </Text>
+                <Text style={[t.atoms.text_contrast_medium]}>
+                  {proofViewer.error}
+                </Text>
+              </View>
+            ) : (
+              <ScrollView
+                style={[a.w_full]}
+                contentContainerStyle={[
+                  a.p_md,
+                  a.rounded_md,
+                  t.atoms.bg_contrast_25,
+                ]}>
+                <Text
+                  style={[a.text_sm, t.atoms.text, {fontFamily: 'monospace'}]}>
+                  {JSON.stringify(proofViewer.data ?? {}, null, 2)}
+                </Text>
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
     </Layout.Screen>
   )
 }

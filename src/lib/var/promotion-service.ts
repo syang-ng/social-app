@@ -69,6 +69,8 @@ export type PromotionTaskValidationResult = {
   validationCount: number
 }
 
+export type PromotionTaskProofJson = unknown
+
 export type CreatePromotionTaskPayload = {
   postUri: string
   feedUri: string
@@ -160,6 +162,15 @@ export function validatePromotionTaskProof(_args: {
 }): Promise<PromotionTaskValidationResult> {
   return Promise.reject(
     new Error('validatePromotionTaskProof is only implemented on web'),
+  )
+}
+
+export function getPromotionTaskProofJson(_args: {
+  serviceUrl: string
+  taskId: string
+}): Promise<PromotionTaskProofJson> {
+  return Promise.reject(
+    new Error('getPromotionTaskProofJson is only implemented on web'),
   )
 }
 
