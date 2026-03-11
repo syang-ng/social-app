@@ -50,6 +50,149 @@ async function registerUserKey({
   }
 }
 
+type RegisteredUserKeyLookup =
+  | {
+      registered: true
+      did: string
+      publicKey: string
+      createdAt?: string
+      updatedAt?: string
+    }
+  | {
+      registered: false
+      error?: string
+    }
+
+async function getRegisteredUserKey({
+  serviceUrl,
+  did,
+}: {
+  serviceUrl: string
+  did: string
+}): Promise<RegisteredUserKeyLookup> {
+  const lookupUrl = new URL(
+    `/var/user-keys/${encodeURIComponent(did)}`,
+    serviceUrl,
+  ).toString()
+  const res = await fetch(lookupUrl)
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
+  if (res.status === 404) {
+    return {
+      registered: false,
+      error: typeof data.error === 'string' ? data.error : 'UserKeyNotFound',
+    }
+  }
+  if (!res.ok) {
+    throw new Error(`get user key failed (${res.status})`)
+  }
+  if (data.registered === true && typeof data.publicKey === 'string') {
+    return {
+      registered: true,
+      did: typeof data.did === 'string' ? data.did : did,
+      publicKey: data.publicKey,
+      createdAt:
+        typeof data.createdAt === 'string' ? data.createdAt : undefined,
+      updatedAt:
+        typeof data.updatedAt === 'string' ? data.updatedAt : undefined,
+    }
+  }
+  return {
+    registered: false,
+    error: typeof data.error === 'string' ? data.error : undefined,
+  }
+}
+
+async function syncRegisteredUserKey({
+  serviceUrl,
+  did,
+  publicKey,
+  feedUri,
+  recordUri,
+}: {
+  serviceUrl: string
+  did: string
+  publicKey: string
+  feedUri: string
+  recordUri?: string
+}): Promise<'unchanged' | 'registered'> {
+  logger.debug('promotion service sync: lookup start', {
+    did,
+    feedUri,
+    serviceUrl,
+    recordUri: recordUri ?? null,
+  })
+  const existing = await getRegisteredUserKey({
+    serviceUrl,
+    did,
+  })
+  if (existing.registered && existing.publicKey === publicKey) {
+    console.log('promotion service sync: already registered', {
+      did,
+      feedUri,
+      serviceUrl,
+      recordUri: recordUri ?? null,
+    })
+    logger.debug('promotion service sync: user key already registered', {
+      did,
+      feedUri,
+      serviceUrl,
+      recordUri: recordUri ?? null,
+    })
+    return 'unchanged'
+  }
+  if (!existing.registered) {
+    console.log('promotion service sync: not registered, will register', {
+      did,
+      feedUri,
+      serviceUrl,
+      recordUri: recordUri ?? null,
+      reason: existing.error ?? null,
+    })
+    logger.debug('promotion service sync: user key not registered remotely', {
+      did,
+      feedUri,
+      serviceUrl,
+      recordUri: recordUri ?? null,
+      reason: existing.error ?? null,
+    })
+  } else {
+    console.log('promotion service sync: key mismatch, will update', {
+      did,
+      feedUri,
+      serviceUrl,
+      recordUri: recordUri ?? null,
+    })
+    logger.debug('promotion service sync: user key mismatch', {
+      did,
+      feedUri,
+      serviceUrl,
+      recordUri: recordUri ?? null,
+      remotePublicKey: existing.publicKey,
+      localPublicKey: publicKey,
+    })
+  }
+  await registerUserKey({
+    serviceUrl,
+    did,
+    publicKey,
+  })
+  console.log('promotion service sync: register success', {
+    did,
+    feedUri,
+    serviceUrl,
+    recordUri: recordUri ?? null,
+    reason: existing.registered ? 'public-key-mismatch' : 'not-registered',
+  })
+  logger.debug('promotion service sync: user key registered', {
+    did,
+    feedUri,
+    serviceUrl,
+    recordUri: recordUri ?? null,
+    reason: existing.registered ? 'public-key-mismatch' : 'not-registered',
+  })
+  return 'registered'
+}
+
 export type EncryptedReceiptResponse = {
   taskId: string
   spenderDid: string
@@ -135,10 +278,11 @@ export type SetupPromotionTaskResult = {
 
 export type PromotionTaskAuditMaterial = {
   taskId: string
-  bundleSeedBase64: string
+  bundleSeedBase64?: string
   ppHashHex: string
-  ppBinBase64: string
+  ppBinBase64?: string
   verifierSecretKeyBase64: string
+  creatorDid?: string
   savedAt?: string
 }
 
@@ -174,8 +318,34 @@ export type PromotionTaskSetupStage =
   | 'encrypt-done'
   | 'upload-public-params-start'
   | 'upload-public-params-done'
+  | 'update-task-start'
+  | 'update-task-done'
+  | 'upload-bundle-seed-start'
+  | 'upload-bundle-seed-done'
   | 'import-receipts-start'
   | 'import-receipts-done'
+
+function getTaskPpHash(task: PromotionTask | null | undefined): string | null {
+  if (!task) return null
+  const rawPpHash = task.ppHash
+  if (typeof rawPpHash === 'string' && rawPpHash.trim()) {
+    return rawPpHash.trim()
+  }
+  const rawPpHashHex = task.ppHashHex
+  if (typeof rawPpHashHex === 'string' && rawPpHashHex.trim()) {
+    return rawPpHashHex.trim()
+  }
+  return null
+}
+
+export function canRebuildPromotionTaskAuditMaterial(args: {
+  ownerDid: string
+  task?: PromotionTask | null
+}): boolean {
+  const {ownerDid, task} = args
+  if (!ownerDid || !task) return false
+  return Boolean(getTaskPpHash(task))
+}
 
 type ReceiptEnvelope = {
   alg: string
@@ -335,6 +505,14 @@ function getLocalVerifierSecretKeyBase64(did: string): string {
   }
   const seed = extractEd25519SeedFromPkcs8(fromBase64(privateKeyPkcs8B64))
   return toBase64(seed)
+}
+
+function getLocalUserPublicKeyBase64(did: string): string {
+  const publicKeyB64 = localStorage.getItem(`${PUBLIC_KEY_PREFIX}${did}`)
+  if (!publicKeyB64) {
+    throw new Error('MissingLocalUserPublicKey')
+  }
+  return publicKeyB64
 }
 
 function nextPowerOfTwo(value: number): number {
@@ -892,14 +1070,93 @@ export async function validatePromotionTaskProof({
   serviceUrl,
   ownerDid,
   taskId,
+  task,
 }: {
   serviceUrl: string
   ownerDid: string
   taskId: string
+  task?: PromotionTask
 }): Promise<PromotionTaskValidationResult> {
-  const audit = getPromotionTaskAuditMaterial({ownerDid, taskId})
+  let audit = getPromotionTaskAuditMaterial({ownerDid, taskId})
   if (!audit) {
-    throw new Error('MissingLocalTaskAuditMaterial')
+    const ppHashHex = getTaskPpHash(task)
+    if (!ppHashHex) {
+      throw new Error('MissingLocalTaskAuditMaterial')
+    }
+    const creatorDid =
+      typeof task?.creatorDid === 'string' && task.creatorDid
+        ? task.creatorDid
+        : ownerDid
+    audit = {
+      taskId,
+      creatorDid,
+      ppHashHex,
+      verifierSecretKeyBase64: getLocalVerifierSecretKeyBase64(ownerDid),
+    }
+    saveTaskAuditMaterial({
+      ownerDid,
+      creatorDid,
+      taskId,
+      bundleSeedBase64: undefined,
+      ppHashHex,
+      ppBinBase64: '',
+      verifierSecretKeyBase64: audit.verifierSecretKeyBase64,
+    })
+    console.log('promotion validate: rebuilt local audit package from task', {
+      taskId,
+      serviceUrl,
+      creatorDid,
+      ppHashHex,
+    })
+  }
+  let bundleSeedBase64 = audit.bundleSeedBase64
+  if (!bundleSeedBase64) {
+    console.log('promotion validate: fetching encrypted bundle seed', {
+      taskId,
+      serviceUrl,
+    })
+    const remote = await fetchEncryptedBundleSeed({
+      serviceUrl,
+      taskId,
+    })
+    const decrypted = await decryptEnvelopeWithLocalKey({
+      did: ownerDid,
+      envelope: normalizeEncryptedEnvelope(remote.encryptedBundleSeed),
+    })
+    bundleSeedBase64 = decrypted.trim()
+  }
+  let ppBinBase64 = audit.ppBinBase64
+  if (!ppBinBase64) {
+    console.log('promotion validate: fetching remote public params', {
+      taskId,
+      serviceUrl,
+      creatorDid: audit.creatorDid ?? ownerDid,
+      ppHashHex: audit.ppHashHex,
+    })
+    ppBinBase64 = await fetchPublicParamsBinaryBase64({
+      serviceUrl,
+      creatorDid: audit.creatorDid ?? ownerDid,
+      ppHash: audit.ppHashHex,
+    })
+    saveTaskAuditMaterial({
+      ownerDid,
+      creatorDid: audit.creatorDid ?? ownerDid,
+      taskId,
+      bundleSeedBase64,
+      ppHashHex: audit.ppHashHex,
+      ppBinBase64,
+      verifierSecretKeyBase64: audit.verifierSecretKeyBase64,
+    })
+  } else if (!audit.bundleSeedBase64) {
+    saveTaskAuditMaterial({
+      ownerDid,
+      creatorDid: audit.creatorDid ?? ownerDid,
+      taskId,
+      bundleSeedBase64,
+      ppHashHex: audit.ppHashHex,
+      ppBinBase64,
+      verifierSecretKeyBase64: audit.verifierSecretKeyBase64,
+    })
   }
 
   const commitmentsUrl = new URL(
@@ -929,7 +1186,7 @@ export async function validatePromotionTaskProof({
     method: 'POST',
     headers: {'content-type': 'application/json'},
     body: JSON.stringify({
-      bundleSeed: audit.bundleSeedBase64,
+      bundleSeed: bundleSeedBase64,
       epoch: commitments.epoch,
     }),
   })
@@ -959,8 +1216,8 @@ export async function validatePromotionTaskProof({
   const wasm = await getPvarWasmModule()
   const verifyOut = parseVerifyChainOutput(
     wasm.verify_chain({
-      ppBinBase64: audit.ppBinBase64,
-      bundleSeedBase64: audit.bundleSeedBase64,
+      ppBinBase64,
+      bundleSeedBase64,
       proofBinBase64,
     }),
   )
@@ -1152,6 +1409,127 @@ async function uploadPublicParams({
   }
 }
 
+async function fetchPublicParamsBinaryBase64({
+  serviceUrl,
+  creatorDid,
+  ppHash,
+}: {
+  serviceUrl: string
+  creatorDid: string
+  ppHash: string
+}): Promise<string> {
+  const metaUrl = new URL(
+    `/var/creators/${encodeURIComponent(creatorDid)}/public-params/${encodeURIComponent(
+      ppHash,
+    )}`,
+    serviceUrl,
+  )
+  metaUrl.searchParams.set('includeRaw', 'true')
+  const metaRes = await fetch(metaUrl.toString(), {
+    method: 'GET',
+  })
+  if (metaRes.ok) {
+    const payload = (await metaRes.json().catch(() => null)) as Record<
+      string,
+      unknown
+    > | null
+    if (payload && typeof payload.ppBin === 'string' && payload.ppBin.length) {
+      return payload.ppBin
+    }
+  }
+
+  const binUrl = new URL(
+    `/var/creators/${encodeURIComponent(creatorDid)}/public-params/${encodeURIComponent(
+      ppHash,
+    )}/pp.bin`,
+    serviceUrl,
+  )
+  const binRes = await fetch(binUrl.toString(), {
+    method: 'GET',
+  })
+  if (!binRes.ok) {
+    throw new Error(`download public params failed (${binRes.status})`)
+  }
+  return toBase64(await binRes.arrayBuffer())
+}
+
+async function uploadEncryptedBundleSeed({
+  serviceUrl,
+  taskId,
+  epoch,
+  encryptedBundleSeed,
+  accessJwt,
+}: {
+  serviceUrl: string
+  taskId: string
+  epoch: number
+  encryptedBundleSeed: string
+  accessJwt?: string
+}): Promise<void> {
+  const url = new URL(
+    `/var/tasks/${encodeURIComponent(taskId)}/encrypted-bundle-seed`,
+    serviceUrl,
+  )
+  const res = await fetch(url.toString(), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...authHeaders(accessJwt),
+    },
+    body: JSON.stringify({
+      epoch,
+      encryptedBundleSeed,
+    }),
+  })
+  if (!res.ok) {
+    throw new Error(`upload encrypted bundle seed failed (${res.status})`)
+  }
+}
+
+async function fetchEncryptedBundleSeed({
+  serviceUrl,
+  taskId,
+}: {
+  serviceUrl: string
+  taskId: string
+}): Promise<{
+  taskId: string
+  epoch: number
+  encryptedBundleSeed: string
+  createdAt?: string
+}> {
+  const url = new URL(
+    `/var/tasks/${encodeURIComponent(taskId)}/encrypted-bundle-seed`,
+    serviceUrl,
+  )
+  const res = await fetch(url.toString(), {
+    method: 'GET',
+  })
+  if (!res.ok) {
+    throw new Error(`get encrypted bundle seed failed (${res.status})`)
+  }
+  const payload = (await res.json()) as Partial<{
+    taskId: string
+    epoch: number
+    encryptedBundleSeed: string
+    createdAt?: string
+  }>
+  if (
+    typeof payload.taskId !== 'string' ||
+    typeof payload.epoch !== 'number' ||
+    typeof payload.encryptedBundleSeed !== 'string'
+  ) {
+    throw new Error('InvalidEncryptedBundleSeedResponse')
+  }
+  return {
+    taskId: payload.taskId,
+    epoch: payload.epoch,
+    encryptedBundleSeed: payload.encryptedBundleSeed,
+    createdAt:
+      typeof payload.createdAt === 'string' ? payload.createdAt : undefined,
+  }
+}
+
 async function importEncryptedReceiptsCsv({
   serviceUrl,
   taskId,
@@ -1185,6 +1563,7 @@ async function importEncryptedReceiptsCsv({
 
 function saveTaskAuditMaterial({
   ownerDid,
+  creatorDid,
   taskId,
   bundleSeedBase64,
   ppHashHex,
@@ -1192,8 +1571,9 @@ function saveTaskAuditMaterial({
   verifierSecretKeyBase64,
 }: {
   ownerDid: string
+  creatorDid?: string
   taskId: string
-  bundleSeedBase64: string
+  bundleSeedBase64?: string
   ppHashHex: string
   ppBinBase64: string
   verifierSecretKeyBase64: string
@@ -1202,6 +1582,7 @@ function saveTaskAuditMaterial({
   localStorage.setItem(
     storageKey,
     JSON.stringify({
+      creatorDid,
       taskId,
       bundleSeedBase64,
       ppHashHex,
@@ -1238,19 +1619,26 @@ export function getPromotionTaskAuditMaterial({
     const parsed = JSON.parse(raw) as Partial<PromotionTaskAuditMaterial>
     if (
       typeof parsed.taskId !== 'string' ||
-      typeof parsed.bundleSeedBase64 !== 'string' ||
       typeof parsed.ppHashHex !== 'string' ||
-      typeof parsed.ppBinBase64 !== 'string' ||
       typeof parsed.verifierSecretKeyBase64 !== 'string'
     ) {
       return null
     }
     return {
       taskId: parsed.taskId,
-      bundleSeedBase64: parsed.bundleSeedBase64,
       ppHashHex: parsed.ppHashHex,
-      ppBinBase64: parsed.ppBinBase64,
+      ppBinBase64:
+        typeof parsed.ppBinBase64 === 'string' && parsed.ppBinBase64.length > 0
+          ? parsed.ppBinBase64
+          : undefined,
       verifierSecretKeyBase64: parsed.verifierSecretKeyBase64,
+      creatorDid:
+        typeof parsed.creatorDid === 'string' ? parsed.creatorDid : undefined,
+      bundleSeedBase64:
+        typeof parsed.bundleSeedBase64 === 'string' &&
+        parsed.bundleSeedBase64.length > 0
+          ? parsed.bundleSeedBase64
+          : undefined,
       savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : undefined,
     }
   } catch {
@@ -1326,6 +1714,31 @@ export async function createPromotionTask({
     throw new Error(`create promotion task failed (${res.status})`)
   }
   return (await res.json()) as {taskId: string; createdAt?: string}
+}
+
+export async function updatePromotionTask({
+  serviceUrl,
+  taskId,
+  payload,
+  accessJwt,
+}: {
+  serviceUrl: string
+  taskId: string
+  payload: {ppHash?: string}
+  accessJwt?: string
+}): Promise<void> {
+  const url = new URL(`/var/tasks/${encodeURIComponent(taskId)}`, serviceUrl)
+  const res = await fetch(url.toString(), {
+    method: 'PATCH',
+    headers: {
+      'content-type': 'application/json',
+      ...authHeaders(accessJwt),
+    },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    throw new Error(`update promotion task failed (${res.status})`)
+  }
 }
 
 export async function setupPromotionTaskIssueChain({
@@ -1409,6 +1822,52 @@ export async function setupPromotionTaskIssueChain({
     ppHashHex: issue.ppHashHex,
   })
 
+  onStage?.('update-task-start')
+  console.log('new promotion: update task pphash start', {
+    taskId,
+    serviceUrl,
+    ppHashHex: issue.ppHashHex,
+  })
+  await updatePromotionTask({
+    serviceUrl,
+    taskId,
+    payload: {
+      ppHash: issue.ppHashHex,
+    },
+    accessJwt,
+  })
+  onStage?.('update-task-done')
+  console.log('new promotion: update task pphash done', {
+    taskId,
+    serviceUrl,
+    ppHashHex: issue.ppHashHex,
+  })
+
+  const localUserPublicKeyBase64 = getLocalUserPublicKeyBase64(creatorDid)
+  onStage?.('upload-bundle-seed-start')
+  console.log('new promotion: upload encrypted bundle seed start', {
+    taskId,
+    serviceUrl,
+    epoch: issue.epoch,
+  })
+  const encryptedBundleSeed = await encryptReceiptForUser({
+    plainReceipt: issue.bundleSeedBase64,
+    receiverPublicKeySpkiBase64: localUserPublicKeyBase64,
+  })
+  await uploadEncryptedBundleSeed({
+    serviceUrl,
+    taskId,
+    epoch: issue.epoch,
+    encryptedBundleSeed,
+    accessJwt,
+  })
+  onStage?.('upload-bundle-seed-done')
+  console.log('new promotion: upload encrypted bundle seed done', {
+    taskId,
+    serviceUrl,
+    epoch: issue.epoch,
+  })
+
   const keyByDid = new Map(userKeys.map(item => [item.did, item.publicKey]))
   for (const item of userKeys) {
     const inspected = inspectX25519SpkiPublicKey(item.publicKey)
@@ -1490,6 +1949,7 @@ export async function setupPromotionTaskIssueChain({
 
   saveTaskAuditMaterial({
     ownerDid: creatorDid,
+    creatorDid,
     taskId,
     bundleSeedBase64: issue.bundleSeedBase64,
     ppHashHex: issue.ppHashHex,
@@ -1692,15 +2152,11 @@ export async function notifyPromotionServiceForSavedFeeds({
           await Promise.all(
             services.map(async service => {
               const serviceUrl = service.serviceEndpoint
-              await registerUserKey({
+              await syncRegisteredUserKey({
                 serviceUrl,
                 did,
                 publicKey,
-              })
-              logger.debug('promotion service notify: user key registered', {
-                did,
                 feedUri,
-                serviceUrl,
                 recordUri: service.recordUri,
               })
             }),
@@ -1708,6 +2164,8 @@ export async function notifyPromotionServiceForSavedFeeds({
         } catch (err) {
           logger.error('promotion service: failed to send key', {
             feedUri,
+            did,
+            phase: 'sync-user-key',
             message: err instanceof Error ? err.message : String(err),
           })
         }
@@ -1715,7 +2173,22 @@ export async function notifyPromotionServiceForSavedFeeds({
     )
   } catch (err) {
     logger.error('promotion service: unexpected failure', {
+      did: agent.session?.did ?? null,
+      phase: 'notify-saved-feeds',
       message: err instanceof Error ? err.message : String(err),
     })
   }
+}
+
+export async function syncPromotionServiceUserKeyForSavedFeeds({
+  agent,
+  savedFeeds,
+}: {
+  agent: BskyAgent
+  savedFeeds: Array<{type: string; value: string}>
+}): Promise<void> {
+  await notifyPromotionServiceForSavedFeeds({
+    agent,
+    savedFeeds,
+  })
 }

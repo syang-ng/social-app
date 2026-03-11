@@ -50,6 +50,8 @@ type PublishStepId =
   | 'user-key-load'
   | 'issue-token'
   | 'upload-public-params'
+  | 'update-task'
+  | 'upload-bundle-seed'
   | 'encrypt'
   | 'import-receipts'
 
@@ -60,6 +62,8 @@ const PUBLISH_STEP_ORDER: PublishStepId[] = [
   'user-key-load',
   'issue-token',
   'upload-public-params',
+  'update-task',
+  'upload-bundle-seed',
   'encrypt',
   'import-receipts',
 ]
@@ -69,6 +73,8 @@ const EMPTY_PUBLISH_STEP_STATE: PublishStepState = {
   'user-key-load': 'pending',
   'issue-token': 'pending',
   'upload-public-params': 'pending',
+  'update-task': 'pending',
+  'upload-bundle-seed': 'pending',
   encrypt: 'pending',
   'import-receipts': 'pending',
 }
@@ -78,6 +84,8 @@ const PUBLISH_STEP_LABELS: Record<PublishStepId, string> = {
   'user-key-load': 'User key load',
   'issue-token': 'Issue token',
   'upload-public-params': 'Upload public params',
+  'update-task': 'Update task ppHash',
+  'upload-bundle-seed': 'Upload encrypted bundle seed',
   encrypt: 'Encrypt receipts',
   'import-receipts': 'Import encrypted receipts',
 }
@@ -141,6 +149,14 @@ export function NewPromotionScreen({}: Props) {
       }
       if (stage === 'upload-public-params-done') {
         markStep('upload-public-params', 'done')
+      }
+      if (stage === 'update-task-start') markStep('update-task', 'running')
+      if (stage === 'update-task-done') markStep('update-task', 'done')
+      if (stage === 'upload-bundle-seed-start') {
+        markStep('upload-bundle-seed', 'running')
+      }
+      if (stage === 'upload-bundle-seed-done') {
+        markStep('upload-bundle-seed', 'done')
       }
       if (stage === 'encrypt-start') markStep('encrypt', 'running')
       if (stage === 'encrypt-done') markStep('encrypt', 'done')

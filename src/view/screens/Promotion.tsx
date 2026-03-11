@@ -13,6 +13,7 @@ import {
 } from '#/lib/routes/types'
 import {getPromotionServicesForFeed} from '#/lib/var/promotion'
 import {
+  canRebuildPromotionTaskAuditMaterial,
   getPromotionPostViews,
   getPromotionTaskAuditMaterial,
   getPromotionTaskProofJson,
@@ -210,6 +211,7 @@ export function PromotionScreen({navigation}: Props) {
         string,
         {
           hasAudit: boolean
+          auditStatusText?: string
           verifiedViewCount: number
           lastValidatedAt?: string
         }
@@ -225,8 +227,17 @@ export function PromotionScreen({navigation}: Props) {
           ownerDid,
           taskId: task.taskId,
         })
+        const hasAudit = Boolean(audit)
+        const canRebuildAudit = canRebuildPromotionTaskAuditMaterial({
+          ownerDid,
+          task,
+        })
         map.set(key, {
-          hasAudit: Boolean(audit),
+          hasAudit: hasAudit || canRebuildAudit,
+          auditStatusText:
+            hasAudit || canRebuildAudit
+              ? undefined
+              : 'Missing local audit package and task metadata. This task cannot be reconstructed because ppHash is not available from the server response.',
           verifiedViewCount: validation.verifiedViewCount,
           lastValidatedAt: validation.lastValidatedAt,
         })
@@ -250,6 +261,7 @@ export function PromotionScreen({navigation}: Props) {
           serviceUrl: task.serviceUrl,
           ownerDid,
           taskId: task.taskId,
+          task,
         })
         console.log('promotion validate: done', {
           taskId: task.taskId,
@@ -503,6 +515,9 @@ export function PromotionScreen({navigation}: Props) {
                   const validationState =
                     validationStateQuery.data?.get(taskKey)
                   const hasAudit = validationState?.hasAudit ?? false
+                  const auditStatusText =
+                    validationState?.auditStatusText ??
+                    'Missing local audit package.'
                   const hasValidated = Boolean(validationState?.lastValidatedAt)
                   const hasPostUri =
                     typeof task.postUri === 'string' && Boolean(task.postUri)
@@ -556,7 +571,7 @@ export function PromotionScreen({navigation}: Props) {
                           ]}>
                           <Text
                             style={[a.text_sm, t.atoms.text_contrast_medium]}>
-                            <Trans>Local audit data required</Trans>
+                            {auditStatusText}
                           </Text>
                         </View>
                       )}

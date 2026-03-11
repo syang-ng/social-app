@@ -138,6 +138,7 @@
     "babel-plugin-transform-remove-console": "^6.9.4",
     "bcp-47": "^2.1.0",
     "bcp-47-match": "^2.0.3",
+    "bip39": "^3.1.0",
     "date-fns": "^2.30.0",
     "email-validator": "^2.0.4",
     "emoji-mart": "^5.6.0",
@@ -195,6 +196,7 @@
     "patch-package": "^8.0.1",
     "postinstall-postinstall": "^2.1.0",
     "psl": "^1.9.0",
+    "pvar-wasm": "file:./var-pkg",
     "radix-ui": "^1.4.3",
     "react": "19.1.0",
     "react-compiler-runtime": "^19.1.0-rc.1",
@@ -233,8 +235,7 @@
     "tlds": "^1.234.0",
     "tldts": "^6.1.46",
     "unicode-segmenter": "^0.14.5",
-    "zod": "^3.20.2",
-    "pvar-wasm": "file:./var-pkg"
+    "zod": "^3.20.2"
   },
   "devDependencies": {
     "@babel/core": "^7.26.0",

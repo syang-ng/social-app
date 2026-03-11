@@ -8,11 +8,22 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react'
+import {Modal, View} from 'react-native'
+import {setStringAsync} from 'expo-clipboard'
 import {type AtpSessionEvent, type BskyAgent} from '@atproto/api'
 
+import {
+  exportVarMasterSeed,
+  getStoredVarMasterSeedBase64,
+  importVarMasterSeed,
+} from '#/lib/var/keyring'
 import * as persisted from '#/state/persisted'
 import {useCloseAllActiveElements} from '#/state/util'
+import {atoms as a, useTheme} from '#/alf'
+import {Button, ButtonText} from '#/components/Button'
 import {useGlobalDialogsControlContext} from '#/components/dialogs/Context'
+import * as TextField from '#/components/forms/TextField'
+import {Text} from '#/components/Typography'
 import {AnalyticsContext, useAnalyticsBase, utils} from '#/analytics'
 import {IS_WEB} from '#/env'
 import {emitSessionDropped} from '../events'
@@ -31,6 +42,7 @@ export type {SessionAccount} from '#/state/session/types'
 
 import {clearPersistedQueryStorage} from '#/lib/persisted-query-storage'
 import {ensureVarUserKeypair} from '#/lib/var/user-keypair'
+import {ensureVarVerifierKeypair} from '#/lib/var/verifier-keypair'
 import {
   type SessionApiContext,
   type SessionStateContext,
@@ -97,7 +109,7 @@ class SessionStore {
         ),
       }
       addSessionDebugLog({type: 'persisted:broadcast', data: persistedData})
-      persisted.write('session', persistedData)
+      void persisted.write('session', persistedData)
     }
     this.listeners.forEach(listener => listener())
   }
@@ -105,10 +117,23 @@ class SessionStore {
 
 export function Provider({children}: React.PropsWithChildren<{}>) {
   const ax = useAnalyticsBase()
+  const t = useTheme()
   const cancelPendingTask = useOneTaskAtATime()
   const [store] = useState(() => new SessionStore())
   const state = useSyncExternalStore(store.subscribe, store.getState)
   const onboardingDispatch = useOnboardingDispatch()
+  const [seedSetupDid, setSeedSetupDid] = useState<string | null>(null)
+  const [seedSetupStep, setSeedSetupStep] = useState<'choice' | 'backup'>(
+    'choice',
+  )
+  const [generatedSeedExport, setGeneratedSeedExport] = useState<string | null>(
+    null,
+  )
+  const [seedImportValue, setSeedImportValue] = useState('')
+  const [seedImportError, setSeedImportError] = useState<string | null>(null)
+  const [seedSetupBusy, setSeedSetupBusy] = useState<
+    'generate' | 'import' | null
+  >(null)
 
   const onAgentSessionChange = useCallback(
     (agent: BskyAgent, accountDid: string, sessionEvent: AtpSessionEvent) => {
@@ -170,7 +195,16 @@ export function Provider({children}: React.PropsWithChildren<{}>) {
         newAgent: agent,
         newAccount: account,
       })
-      void ensureVarUserKeypair(agent).catch(() => {})
+      if (IS_WEB && !getStoredVarMasterSeedBase64(account.did)) {
+        setSeedSetupDid(account.did)
+        setSeedSetupStep('choice')
+        setGeneratedSeedExport(null)
+        setSeedImportValue('')
+        setSeedImportError(null)
+      } else {
+        void ensureVarUserKeypair(agent).catch(() => {})
+        void ensureVarVerifierKeypair(agent).catch(() => {})
+      }
       ax.metric(
         'account:loggedIn',
         {logContext, withPassword: true},
@@ -329,7 +363,7 @@ export function Provider({children}: React.PropsWithChildren<{}>) {
            * follower tabs. Follower tabs will therefore receive the fresh
            * session. See APP-1960, or ask Eric.
            */
-          resumeSession(syncedAccount)
+          void resumeSession(syncedAccount)
         } else {
           const agent = state.currentAgentState.agent as BskyAgent
           const prevSession = agent.session
@@ -381,6 +415,7 @@ export function Provider({children}: React.PropsWithChildren<{}>) {
   if (__DEV__ && IS_WEB) window.agent = state.currentAgentState.agent
 
   const agent = state.currentAgentState.agent as BskyAppAgent
+  const currentDid = state.currentAgentState.did
   const currentAgentRef = useRef(agent)
   useEffect(() => {
     if (currentAgentRef.current !== agent) {
@@ -394,6 +429,89 @@ export function Provider({children}: React.PropsWithChildren<{}>) {
     }
   }, [agent])
 
+  useEffect(() => {
+    if (!IS_WEB) return
+    if (!currentDid) {
+      setSeedSetupDid(null)
+      setSeedSetupStep('choice')
+      setGeneratedSeedExport(null)
+      setSeedImportValue('')
+      setSeedImportError(null)
+      return
+    }
+    if (!getStoredVarMasterSeedBase64(currentDid)) {
+      setSeedSetupDid(prev => prev ?? currentDid)
+    } else if (seedSetupDid === currentDid) {
+      setSeedSetupDid(null)
+      setSeedSetupStep('choice')
+      setGeneratedSeedExport(null)
+      setSeedImportValue('')
+      setSeedImportError(null)
+    }
+  }, [currentDid, seedSetupDid])
+
+  const completeSeedSetup = useCallback(async () => {
+    await ensureVarUserKeypair(agent).catch(() => {})
+    await ensureVarVerifierKeypair(agent).catch(() => {})
+    setSeedSetupDid(null)
+    setSeedSetupStep('choice')
+    setGeneratedSeedExport(null)
+    setSeedImportValue('')
+    setSeedImportError(null)
+  }, [agent])
+
+  const prepareGeneratedSeedBackup = useCallback(() => {
+    if (!currentDid) return
+    void exportVarMasterSeed(currentDid).then(exported => {
+      setGeneratedSeedExport(exported)
+      setSeedSetupStep('backup')
+    })
+  }, [currentDid])
+
+  const onGenerateSeed = useCallback(async () => {
+    if (!currentDid) return
+    try {
+      setSeedSetupBusy('generate')
+      await ensureVarUserKeypair(agent).catch(() => {})
+      await ensureVarVerifierKeypair(agent).catch(() => {})
+      prepareGeneratedSeedBackup()
+    } finally {
+      setSeedSetupBusy(null)
+    }
+  }, [agent, currentDid, prepareGeneratedSeedBackup])
+
+  const onImportSeed = useCallback(async () => {
+    if (!currentDid) return
+    try {
+      setSeedSetupBusy('import')
+      setSeedImportError(null)
+      await importVarMasterSeed(currentDid, seedImportValue)
+      await completeSeedSetup()
+    } catch (err) {
+      setSeedImportError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSeedSetupBusy(null)
+    }
+  }, [completeSeedSetup, currentDid, seedImportValue])
+
+  const onCopyGeneratedSeed = useCallback(async () => {
+    if (!generatedSeedExport) return
+    await setStringAsync(generatedSeedExport)
+  }, [generatedSeedExport])
+
+  const onDownloadGeneratedSeed = useCallback(() => {
+    if (!IS_WEB || !generatedSeedExport || !currentDid) return
+    const blob = new Blob([generatedSeedExport], {
+      type: 'text/plain;charset=utf-8',
+    })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `promotion-seed-${currentDid}.txt`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }, [currentDid, generatedSeedExport])
+
   return (
     <AgentContext.Provider value={agent}>
       <StateContext.Provider value={stateContext}>
@@ -405,6 +523,152 @@ export function Provider({children}: React.PropsWithChildren<{}>) {
               ),
             })}>
             {children}
+            <Modal
+              transparent
+              visible={Boolean(
+                IS_WEB && currentDid && seedSetupDid === currentDid,
+              )}
+              animationType="fade"
+              onRequestClose={() => {}}>
+              <View
+                style={[
+                  a.flex_1,
+                  a.justify_center,
+                  a.align_center,
+                  {backgroundColor: 'rgba(0, 0, 0, 0.45)'},
+                ]}>
+                <View
+                  style={[
+                    a.w_full,
+                    a.mx_lg,
+                    a.rounded_lg,
+                    a.border,
+                    a.p_lg,
+                    a.gap_md,
+                    t.atoms.bg,
+                    t.atoms.border_contrast_low,
+                    {maxWidth: 640},
+                  ]}>
+                  {seedSetupStep === 'choice' ? (
+                    <>
+                      <Text style={[a.text_2xl, a.font_bold]}>
+                        Set up promotion seed
+                      </Text>
+                      <Text style={[t.atoms.text_contrast_medium]}>
+                        This account does not have local promotion keys on this
+                        device yet. Generate a new recovery phrase or import an
+                        existing one before using promotion features.
+                      </Text>
+                      <Button
+                        label="Generate new promotion seed"
+                        size="small"
+                        variant="solid"
+                        color="primary"
+                        disabled={seedSetupBusy !== null}
+                        onPress={() => {
+                          void onGenerateSeed()
+                        }}>
+                        <ButtonText>
+                          {seedSetupBusy === 'generate'
+                            ? 'Generating...'
+                            : 'Generate new seed'}
+                        </ButtonText>
+                      </Button>
+                      <View style={[a.gap_sm]}>
+                        <Text style={[a.font_bold]}>Import existing seed</Text>
+                        <TextField.Root isInvalid={Boolean(seedImportError)}>
+                          <TextField.Input
+                            label="Promotion recovery phrase"
+                            value={seedImportValue}
+                            onChangeText={value => {
+                              setSeedImportValue(value)
+                              if (seedImportError) setSeedImportError(null)
+                            }}
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            placeholder="Paste recovery words"
+                          />
+                        </TextField.Root>
+                        {seedImportError ? (
+                          <Text
+                            style={[
+                              a.text_sm,
+                              {color: t.palette.negative_500},
+                            ]}>
+                            {seedImportError}
+                          </Text>
+                        ) : null}
+                        <Button
+                          label="Import promotion seed"
+                          size="small"
+                          variant="outline"
+                          color="secondary"
+                          disabled={
+                            !seedImportValue.trim() || seedSetupBusy !== null
+                          }
+                          onPress={() => {
+                            void onImportSeed()
+                          }}>
+                          <ButtonText>
+                            {seedSetupBusy === 'import'
+                              ? 'Importing...'
+                              : 'Import seed'}
+                          </ButtonText>
+                        </Button>
+                      </View>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={[a.text_2xl, a.font_bold]}>
+                        Back up your promotion seed
+                      </Text>
+                      <Text style={[t.atoms.text_contrast_medium]}>
+                        Save these words now. You can restore your promotion
+                        keys on another device.
+                      </Text>
+                      <View
+                        style={[a.rounded_md, a.p_md, t.atoms.bg_contrast_25]}>
+                        <Text selectable style={[a.text_sm, t.atoms.text]}>
+                          {generatedSeedExport || ''}
+                        </Text>
+                      </View>
+                      <View style={[a.flex_row, a.gap_sm]}>
+                        <Button
+                          label="Copy promotion seed"
+                          size="small"
+                          variant="outline"
+                          color="secondary"
+                          onPress={() => {
+                            void onCopyGeneratedSeed()
+                          }}>
+                          <ButtonText>Copy seed</ButtonText>
+                        </Button>
+                        {IS_WEB ? (
+                          <Button
+                            label="Download promotion seed file"
+                            size="small"
+                            variant="outline"
+                            color="secondary"
+                            onPress={onDownloadGeneratedSeed}>
+                            <ButtonText>Download file</ButtonText>
+                          </Button>
+                        ) : null}
+                      </View>
+                      <Button
+                        label="I saved the promotion seed"
+                        size="small"
+                        variant="solid"
+                        color="primary"
+                        onPress={() => {
+                          void completeSeedSetup()
+                        }}>
+                        <ButtonText>I saved it</ButtonText>
+                      </Button>
+                    </>
+                  )}
+                </View>
+              </View>
+            </Modal>
           </AnalyticsContext>
         </ApiContext.Provider>
       </StateContext.Provider>

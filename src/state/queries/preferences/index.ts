@@ -1,4 +1,4 @@
-import {useCallback} from 'react'
+import {useCallback, useEffect, useRef} from 'react'
 import {
   type AppBskyActorDefs,
   type BskyFeedViewPreference,
@@ -9,7 +9,10 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {PROD_DEFAULT_FEED} from '#/lib/constants'
 import {replaceEqualDeep} from '#/lib/functions'
 import {getAge} from '#/lib/strings/time'
-import {notifyPromotionServiceForSavedFeeds} from '#/lib/var/promotion-service'
+import {
+  notifyPromotionServiceForSavedFeeds,
+  syncPromotionServiceUserKeyForSavedFeeds,
+} from '#/lib/var/promotion-service'
 import {
   PERSISTED_QUERY_GCTIME,
   PERSISTED_QUERY_ROOT,
@@ -39,6 +42,7 @@ export const preferencesQueryKey = [PERSISTED_QUERY_ROOT, 'getPreferences']
 export function usePreferencesQuery() {
   const agent = useAgent()
   const aa = useAgeAssurance()
+  const lastPromotionSyncKeyRef = useRef<string | null>(null)
 
   const query = useQuery({
     staleTime: STALE.SECONDS.FIFTEEN,
@@ -104,6 +108,25 @@ export function usePreferencesQuery() {
      */
     query.data.birthDate = new Date(query.data.birthDate)
   }
+
+  useEffect(() => {
+    if (!agent.did || !query.data?.savedFeeds?.length) return
+    const feedUris = query.data.savedFeeds
+      .filter(feed => feed.type === 'feed')
+      .map(feed => feed.value)
+      .filter(value => value.includes('app.bsky.feed.generator'))
+      .sort()
+    if (feedUris.length === 0) return
+    const syncKey = `${agent.did}:${feedUris.join('|')}`
+    if (lastPromotionSyncKeyRef.current === syncKey) return
+    lastPromotionSyncKeyRef.current = syncKey
+    void syncPromotionServiceUserKeyForSavedFeeds({
+      agent,
+      savedFeeds: query.data.savedFeeds,
+    }).catch(() => {
+      lastPromotionSyncKeyRef.current = null
+    })
+  }, [agent, query.data?.savedFeeds])
 
   return query
 }

@@ -10,6 +10,16 @@ export function notifyPromotionServiceForSavedFeeds({
   return Promise.resolve()
 }
 
+export function syncPromotionServiceUserKeyForSavedFeeds({
+  agent: _agent,
+  savedFeeds: _savedFeeds,
+}: {
+  agent: BskyAgent
+  savedFeeds: Array<{type: string; value: string}>
+}): Promise<void> {
+  return Promise.resolve()
+}
+
 export type EncryptedReceiptResponse = {
   taskId: string
   spenderDid: string
@@ -35,10 +45,11 @@ export type PromotionPostViews = {
 
 export type PromotionTaskAuditMaterial = {
   taskId: string
-  bundleSeedBase64: string
+  bundleSeedBase64?: string
   ppHashHex: string
-  ppBinBase64: string
+  ppBinBase64?: string
   verifierSecretKeyBase64: string
+  creatorDid?: string
   savedAt?: string
 }
 
@@ -108,8 +119,19 @@ export type PromotionTaskSetupStage =
   | 'encrypt-done'
   | 'upload-public-params-start'
   | 'upload-public-params-done'
+  | 'update-task-start'
+  | 'update-task-done'
+  | 'upload-bundle-seed-start'
+  | 'upload-bundle-seed-done'
   | 'import-receipts-start'
   | 'import-receipts-done'
+
+export function canRebuildPromotionTaskAuditMaterial(_args: {
+  ownerDid: string
+  task?: PromotionTask | null
+}): boolean {
+  return false
+}
 
 export function requestEncryptedReceipt(_args: {
   serviceUrl: string
@@ -159,6 +181,7 @@ export function validatePromotionTaskProof(_args: {
   serviceUrl: string
   ownerDid: string
   taskId: string
+  task?: PromotionTask
 }): Promise<PromotionTaskValidationResult> {
   return Promise.reject(
     new Error('validatePromotionTaskProof is only implemented on web'),
@@ -207,6 +230,17 @@ export function createPromotionTask(_args: {
 }): Promise<{taskId: string; createdAt?: string}> {
   return Promise.reject(
     new Error('createPromotionTask is only implemented on web'),
+  )
+}
+
+export function updatePromotionTask(_args: {
+  serviceUrl: string
+  taskId: string
+  payload: {ppHash?: string}
+  accessJwt?: string
+}): Promise<void> {
+  return Promise.reject(
+    new Error('updatePromotionTask is only implemented on web'),
   )
 }
 
